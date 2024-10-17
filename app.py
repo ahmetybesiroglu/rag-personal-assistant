@@ -4,15 +4,13 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_openai.chat_models import ChatOpenAI
-from langchain_community.document_loaders import DirectoryLoader, TextLoader, UnstructuredWordDocumentLoader
+from langchain_community.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_unstructured import UnstructuredLoader
 import hashlib
-import glob
 
 # Enable LangSmith tracing
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 # Set OpenAI API key
 openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -30,23 +28,22 @@ def get_documents_hash(directory):
                     hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
-# Load documents from the selected directory using Unstructured (local parsing)
+# Load documents from the selected directory
 @st.cache_data
-def load_documents(_hash, directory):
+def load_documents(directory):
     documents = []
+    
+    # Load text files
+    text_loader = DirectoryLoader(directory, glob='**/*.txt', loader_cls=TextLoader, recursive=True)
+    documents.extend(text_loader.load())
 
-    # Collect all supported file paths
-    file_extensions = ['.txt', '.pdf', '.docx']
-    file_paths = []
-    for ext in file_extensions:
-        file_paths.extend(glob.glob(os.path.join(directory, '**/*' + ext), recursive=True))
+    # Load PDF files
+    pdf_loader = DirectoryLoader(directory, glob='**/*.pdf', loader_cls=PyPDFLoader, recursive=True)
+    documents.extend(pdf_loader.load())
 
-    if not file_paths:
-        return documents  # No files found
-
-    # Use UnstructuredLoader for local parsing
-    loader = UnstructuredLoader(file_path=file_paths)
-    documents.extend(loader.load())
+    # Load Word documents
+    word_loader = DirectoryLoader(directory, glob='**/*.docx', loader_cls=UnstructuredWordDocumentLoader, recursive=True)
+    documents.extend(word_loader.load())
 
     return documents
 
@@ -120,8 +117,13 @@ def main():
     base_dir = 'documents/'
     subdirectories = get_subdirectories(base_dir)
     selected_folder = st.sidebar.selectbox("Choose a folder:", subdirectories, index=subdirectories.index(st.session_state['selected_folder']))
-    
-    st.session_state['selected_folder'] = selected_folder
+
+    # Check if selected folder is different from the previously selected one, then refresh documents
+    if st.session_state['selected_folder'] != selected_folder:
+        st.session_state['selected_folder'] = selected_folder
+        st.session_state['documents_hash'] = None  # Clear the documents hash so it reloads
+        st.rerun()  # Force the app to rerun and reload documents
+
     full_path = base_dir if selected_folder == "All" else os.path.join(base_dir, selected_folder)
 
     if not os.path.exists(full_path):
@@ -131,14 +133,14 @@ def main():
     # Add a button to refresh documents
     if st.sidebar.button("Refresh Documents"):
         st.session_state['documents_hash'] = get_documents_hash(full_path)
-        st.experimental_rerun()
+        st.rerun()
 
     # Load and process documents
     with st.spinner('Loading documents...'):
         if st.session_state['documents_hash'] is None:
             st.session_state['documents_hash'] = get_documents_hash(full_path)
-        
-        documents = load_documents(st.session_state['documents_hash'], full_path)
+
+        documents = load_documents(full_path)
         if not documents:
             st.warning(f"No documents found in the '{full_path}' folder.")
             return
@@ -156,7 +158,7 @@ def main():
         if question:
             with st.spinner('Searching for the answer...'):
                 try:
-                    result = chain({"query": question})
+                    result = chain.invoke({"query": question})
                     answer = result.get("result", "No answer found")
                     
                     # Store question and answer in session state (chat history)
@@ -168,9 +170,9 @@ def main():
         else:
             st.warning('Please enter a question.')
 
-    # Display the chat history
+    # Display the chat history in reverse order
     st.markdown('### Conversation History')
-    for i, (q, a) in enumerate(st.session_state['history']):
+    for i, (q, a) in reversed(list(enumerate(st.session_state['history']))):
         st.write(f"**Q{i+1}:** {q}")
         st.write(f"**A{i+1}:** {a}")
 
@@ -179,10 +181,9 @@ def main():
     if show_sources and st.session_state['last_result']:
         st.markdown('### Source')
         if st.session_state['last_result']['source_documents']:
-            sources = set(doc.metadata.get('source', 'Unknown') for doc in st.session_state['last_result']['source_documents'])
-            for source in sources:
-                st.write(f"- {source}")
-            st.write("(The answer was derived from different sections of these documents)")
+            source = st.session_state['last_result']['source_documents'][0].metadata.get('source', 'Unknown')
+            st.write(f"- {source}")
+            st.write("(The answer was derived from different sections of this document)")
         else:
             st.write("No source documents found for this answer.")
 
