@@ -83,8 +83,8 @@ def get_subdirectories(base_dir):
 
 # Main function with chat history
 def main():
-    st.set_page_config(page_title='Personal Knowledge Assistant', page_icon='📚')
-    st.title('📚 Personal Knowledge Assistant')
+    st.set_page_config(page_title='Personal Assistant', page_icon='📚')
+    st.title('📚 Personal Assistant')
 
     # Initialize session state
     if 'history' not in st.session_state:
